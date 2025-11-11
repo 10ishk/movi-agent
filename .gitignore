@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+*.db
+*.sqlite3
+
+# Ignore the virtual environment
+.ML/
+
+# OS
+.DS_Store
+
+#Files Pdf
+*.pdf
