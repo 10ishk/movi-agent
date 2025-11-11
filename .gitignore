@@ -5,12 +5,15 @@ venv/
 *.db
 *.sqlite3
 
-# Ignore the virtual environment
+# Node
+node_modules/
+
+# Virtual environments
+.venv/
 .ML/
 
 # OS
 .DS_Store
 
-#Files Pdf
+# PDFs / temp
 *.pdf
-*GenAI interview assignment.pdf
