@@ -21,6 +21,7 @@ app.use("/api/bookings", require("./routes/bookings"));
 app.use("/api/image", require("./routes/image"));
 
 app.get("/", (req, res) => res.send("Movi Backend API is running 🚍"));
+app.use("/api/helpers", require("./routes/admin_helpers"));
 
 app.listen(PORT, () => console.log(`🚀 Server running on http://localhost:${PORT}`));
 
