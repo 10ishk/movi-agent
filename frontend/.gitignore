@@ -1,0 +1,28 @@
+# Node / frontend
+node_modules/
+frontend/node_modules/
+dist/
+build/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Databases
+*.db
+*.sqlite3
+backend/movi.db
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
