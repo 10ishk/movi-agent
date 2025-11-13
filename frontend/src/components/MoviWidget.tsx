@@ -23,6 +23,7 @@ const MoviWidget: React.FC<MoviWidgetProps> = ({ currentPage }) => {
   const [imageText, setImageText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isParsingImage, setIsParsingImage] = useState(false);
+  const [pendingId, setPendingId] = useState<string | null>(null);   // NEW
   const [error, setError] = useState<string | null>(null);
   const [isListening, setIsListening] = useState(false);
 
@@ -66,6 +67,7 @@ const MoviWidget: React.FC<MoviWidgetProps> = ({ currentPage }) => {
     window.speechSynthesis.speak(utterance);
   };
 
+  // UPDATED handleSend -------------------------------------------------
   const handleSend = async () => {
     if (!userInput.trim() && !imageText.trim()) return;
 
@@ -82,6 +84,7 @@ const MoviWidget: React.FC<MoviWidgetProps> = ({ currentPage }) => {
     setImageText('');
     setIsLoading(true);
     setError(null);
+    setPendingId(null); // reset pending id for new request
 
     try {
       const apiResponse = await fetch(AGENT_API, {
@@ -99,15 +102,26 @@ const MoviWidget: React.FC<MoviWidgetProps> = ({ currentPage }) => {
       }
 
       const data = await apiResponse.json();
-      // Assuming the backend responds with a JSON object like { "response": "..." }
-      const agentResponseText = data.response || 'Sorry, I could not process that.';
-      
+      // log the full backend response to console — helpful for debugging
+      console.log("AI agent raw response:", data);
+
+      // The Python agent returns `message` (and sometimes `response`) — prefer `message`.
+      const agentResponseText = data.message || data.response || (data.ok === false ? (data.error || JSON.stringify(data)) : 'Sorry, I could not process that.');
+
+
+      // if backend asks for confirmation, store pendingId and show appropriate message
+      if (data?.confirmationRequired && data?.pendingId) {
+        setPendingId(data.pendingId);
+      }
+
       const agentResponse: ChatMessage = {
         id: Date.now() + 1,
         sender: 'agent',
         text: agentResponseText,
       };
       setMessages(prev => [...prev, agentResponse]);
+
+      // speak the message (optional)
       speakResponse(agentResponseText);
 
     } catch (e: any) {
@@ -119,7 +133,47 @@ const MoviWidget: React.FC<MoviWidgetProps> = ({ currentPage }) => {
       setIsLoading(false);
     }
   };
-  
+
+  // NEW helper -------------------------------------------------------
+  const handleConfirmPending = async () => {
+    if (!pendingId) {
+      alert("No pending action to confirm.");
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+    try {
+      const apiResponse = await fetch(AGENT_API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          input: "yes",
+          pendingId: pendingId,
+          currentPage: currentPage
+        }),
+      });
+
+      if (!apiResponse.ok) {
+        throw new Error(`HTTP error! status: ${apiResponse.status}`);
+      }
+
+      const data = await apiResponse.json();
+      console.log("AI confirm raw response:", data);
+      const agentResponseText = data?.message ?? data?.response ?? JSON.stringify(data);
+      setMessages(prev => [...prev, { id: Date.now() + 1, sender: 'agent', text: agentResponseText }]);
+      speakResponse(agentResponseText);
+
+      // clear pending on success (backend should remove it)
+      setPendingId(null);
+    } catch (e: any) {
+      console.error(e);
+      setMessages(prev => [...prev, { id: Date.now() + 1, sender: 'agent', text: 'Failed to confirm pending action.' }]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const blobToBase64 = (blob: Blob): Promise<string> => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -153,7 +207,6 @@ const MoviWidget: React.FC<MoviWidgetProps> = ({ currentPage }) => {
       }
       
       const data = await apiResponse.json();
-      // Assuming the backend responds with a JSON object like { "text": "..." }
       setImageText(data.text || '');
       
     } catch (e: any) {
@@ -258,7 +311,15 @@ const MoviWidget: React.FC<MoviWidgetProps> = ({ currentPage }) => {
             <div className="flex gap-2">
               <input type="file" accept="image/*" ref={fileInputRef} onChange={handleImageUpload} style={{ display: 'none' }} />
               <button onClick={() => fileInputRef.current?.click()} className="text-xs flex items-center gap-1 text-brand-gray-600 hover:text-brand-blue" disabled={isParsingImage}><ImageIcon/> Parse Image</button>
-              <button className="text-xs text-brand-gray-600 hover:text-brand-blue">Confirm Pending</button>
+              {/* UPDATED Confirm Pending button */}
+              <button
+                className="text-xs text-brand-gray-600 hover:text-brand-blue"
+                onClick={handleConfirmPending}
+                disabled={!pendingId || isLoading}
+                title={pendingId ? `Pending: ${pendingId}` : "No pending action"}
+              >
+                {pendingId ? `Confirm Pending (${pendingId})` : "Confirm Pending"}
+              </button>
             </div>
             <button onClick={handleReset} className="text-xs text-red-500 hover:underline">Reset</button>
         </div>

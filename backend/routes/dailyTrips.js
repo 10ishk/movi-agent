@@ -1,28 +1,48 @@
 const express = require("express");
-const db = require("../db");
+const fs = require("fs");
+const path = require("path");
+const sqlite3 = require("sqlite3").verbose();
 const router = express.Router();
 
-router.get("/", (req, res) => {
-  const q = `
-    SELECT dt.*, r.route_display_name, d.vehicle_id, d.driver_id
-    FROM daily_trips dt
-    LEFT JOIN routes r ON r.route_id = dt.route_id
-    LEFT JOIN deployments d ON d.trip_id = dt.trip_id
-    WHERE dt.scheduled_date = date('now')
-  `;
-  db.all(q, [], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json(rows);
-  });
-});
+const dataDir = path.join(__dirname, "..", "data");
+const dbFile = path.join(dataDir, "movi.db");
+const jsonFile = path.join(dataDir, "trips.json");
 
-router.get("/:id", (req, res) => {
-  const id = req.params.id;
-  const q = `SELECT dt.*, r.route_display_name FROM daily_trips dt LEFT JOIN routes r ON r.route_id = dt.route_id WHERE dt.trip_id = ?`;
-  db.get(q, [id], (err, row) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json(row);
+async function readFromDb() {
+  return new Promise((resolve, reject) => {
+    if (!fs.existsSync(dbFile)) return resolve(null);
+    const db = new sqlite3.Database(dbFile, sqlite3.OPEN_READONLY, (err) => {
+      if (err) return resolve(null);
+    });
+    db.all("SELECT trip_id, display_name FROM daily_trips LIMIT 1000", (err, rows) => {
+      db.close();
+      if (err) return resolve(null);
+      resolve(rows || []);
+    });
   });
+}
+
+router.get("/", async (req, res) => {
+  try {
+    // try DB first
+    const fromDb = await readFromDb();
+    if (fromDb && fromDb.length) {
+      return res.json(fromDb);
+    }
+
+    // fallback to JSON file
+    if (fs.existsSync(jsonFile)) {
+      const raw = fs.readFileSync(jsonFile, "utf8");
+      const trips = JSON.parse(raw);
+      return res.json(trips);
+    }
+
+    // nothing => empty array
+    return res.json([]);
+  } catch (err) {
+    console.error("Error in dailyTrips route:", err);
+    return res.status(500).json({ ok: false, error: "Failed to load daily trips" });
+  }
 });
 
 module.exports = router;
