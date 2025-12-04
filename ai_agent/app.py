@@ -240,9 +240,98 @@ def find_best_route_match(target_text: str, routes: list):
     return None
 
 
+def fetch_deployments():
+    """Fetch all deployments (used for list_unassigned_trips)."""
+    resp = node_get("/api/deployments")
+    if isinstance(resp, list):
+        return resp
+    if isinstance(resp, dict):
+        for key in ("deployments", "data", "items"):
+            val = resp.get(key)
+            if isinstance(val, list):
+                return val
+    logger.warning("Unexpected /api/deployments payload shape: %s", type(resp))
+    return []
+
+
 # --------------------------
 # Intent parsing helpers
 # --------------------------
+
+
+def _looks_like_trip_or_route_name(text: str) -> bool:
+    t = text.strip()
+    # very simple heuristic: contains a time or a dash pattern
+    if re.search(r"\d{1,2}:\d{2}", t):
+        return True
+    if "-" in t:
+        return True
+    return False
+
+
+def _strip_status_wrappers(text: str) -> str:
+    """Remove 'status of', 'what is the status of', etc. from the front."""
+    t = (text or "").strip()
+    tl = t.lower()
+
+    patterns = [
+        r"^(what\s+is\s+the\s+status\s+of\s+)",
+        r"^(what\s+is\s+status\s+of\s+)",
+        r"^(status\s+of\s+)",
+        r"^(status\s+for\s+)",
+        r"^(status\s+)",
+    ]
+
+    for pat in patterns:
+        m = re.match(pat, tl)
+        if m:
+            # cut off exactly the matched prefix length from original string
+            return t[m.end():].strip()
+    return t
+
+
+def _extract_trip_phrase_from_text(text: str) -> Optional[str]:
+    """
+    Try to pull out the trip phrase for assignment/tripsheet, e.g.
+    'Assign vehicle 2 to Bulk - 00:01' -> 'Bulk - 00:01'
+    """
+    if not text:
+        return None
+    # quoted
+    if '"' in text:
+        parts = text.split('"')
+        if len(parts) >= 3:
+            return parts[1].strip()
+
+    # after 'to' or 'for'
+    m = re.search(r"\bto\s+(.+)$", text, flags=re.IGNORECASE)
+    if not m:
+        m = re.search(r"\bfor\s+(.+)$", text, flags=re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+
+    # fallback: last few words
+    parts = text.split()
+    if len(parts) >= 3:
+        return " ".join(parts[-4:]).strip()
+    return text.strip()
+
+
+def _extract_vehicle_and_driver(text: str):
+    """
+    Extract vehicle_id and driver_id integers from text if present.
+    Returns (vehicle_id_or_None, driver_id_or_None).
+    """
+    if not text:
+        return None, None
+    v_match = re.search(r"\bvehicle\s+(\d+)\b", text, flags=re.IGNORECASE)
+    if not v_match:
+        v_match = re.search(r"\bbus\s+(\d+)\b", text, flags=re.IGNORECASE)
+    d_match = re.search(r"\bdriver\s+(\d+)\b", text, flags=re.IGNORECASE)
+
+    vehicle_id = int(v_match.group(1)) if v_match else None
+    driver_id = int(d_match.group(1)) if d_match else None
+    return vehicle_id, driver_id
 
 
 def fallback_parse_intent(user_text: str):
@@ -278,6 +367,50 @@ def fallback_parse_intent(user_text: str):
         else:
             parts = user_text.split()
             out["target"] = " ".join(parts[-4:])
+        return out
+
+    # assign vehicle intent
+    assign_keywords = ("assign", "allocate", "deploy")
+    if any(w in text for w in assign_keywords) and any(
+        k in text for k in ("vehicle", "bus")
+    ):
+        out["intent"] = "assign_vehicle"
+        out["target"] = _extract_trip_phrase_from_text(user_text)
+        return out
+
+    # tripsheet / summary
+    if "tripsheet" in text or "trip sheet" in text or "trip summary" in text or (
+        "summary" in text and "trip" in text
+    ):
+        out["intent"] = "tripsheet"
+        out["target"] = _extract_trip_phrase_from_text(user_text)
+        return out
+
+    # list trips
+    if (
+        (("show" in text) or ("list" in text)) and ("trip" in text or "trips" in text)
+    ) or text in ("show trips", "list trips", "show all trips", "list all trips"):
+        out["intent"] = "list_trips"
+        out["target"] = user_text
+        return out
+
+    # list routes
+    if (
+        (("show" in text) or ("list" in text)) and ("route" in text or "routes" in text)
+    ) or text in ("show routes", "list routes", "show all routes", "list all routes"):
+        out["intent"] = "list_routes"
+        out["target"] = user_text
+        return out
+
+    # list unassigned trips
+    if (
+        "no vehicle" in text
+        or "without vehicle" in text
+        or "without bus" in text
+        or "unassigned" in text
+    ) and ("trip" in text or "trips" in text or "bus" in text or "buses" in text):
+        out["intent"] = "list_unassigned_trips"
+        out["target"] = user_text
         return out
 
     # route-related queries
@@ -343,37 +476,6 @@ def fallback_parse_intent(user_text: str):
     return out
 
 
-def _looks_like_trip_or_route_name(text: str) -> bool:
-    t = text.strip()
-    # very simple heuristic: contains a time or a dash pattern
-    if re.search(r"\d{1,2}:\d{2}", t):
-        return True
-    if "-" in t:
-        return True
-    return False
-
-
-def _strip_status_wrappers(text: str) -> str:
-    """Remove 'status of', 'what is the status of', etc. from the front."""
-    t = (text or "").strip()
-    tl = t.lower()
-
-    patterns = [
-        r"^(what\s+is\s+the\s+status\s+of\s+)",
-        r"^(what\s+is\s+status\s+of\s+)",
-        r"^(status\s+of\s+)",
-        r"^(status\s+for\s+)",
-        r"^(status\s+)",
-    ]
-
-    for pat in patterns:
-        m = re.match(pat, tl)
-        if m:
-            # cut off exactly the matched prefix length from original string
-            return t[m.end():].strip()
-    return t
-
-
 # --------------------------
 # Core orchestration
 # --------------------------
@@ -386,7 +488,12 @@ def perform_consequence_check_and_maybe_execute(
     current_page: Optional[str] = None,
 ):
     """
-    Handles consequence checking and execution (remove vehicle + trip/route info flows).
+    Handles consequence checking and execution:
+    - remove vehicle
+    - assign vehicle
+    - trip/route info
+    - list_* flows
+    - tripsheet
     Returns consistent JSON objects expected by the frontend.
     """
     logger.info(
@@ -397,8 +504,11 @@ def perform_consequence_check_and_maybe_execute(
         current_page,
     )
 
+    intent = parsed_intent.get("intent") if parsed_intent else None
+    raw_text = parsed_intent.get("raw_text") if parsed_intent else None
+
     # 1) Confirmation handling
-    if parsed_intent and parsed_intent.get("intent") == "confirm" and pending_id:
+    if intent == "confirm" and pending_id:
         logger.info("Handling confirm for pending_id=%s", pending_id)
         p = PENDING.get(pending_id)
         if not p:
@@ -411,6 +521,7 @@ def perform_consequence_check_and_maybe_execute(
             bookings_count = p["details"].get("bookings", 0)
             try:
                 resp_del = node_delete(f"/api/deployments/{deployment_id}") or {}
+                # NOTE: bookings are conceptually cancelled in DB by backend logic.
                 del PENDING[pending_id]
                 msg = (
                     f"Removed vehicle (deployment {deployment_id}) from trip {trip_id}. "
@@ -434,7 +545,7 @@ def perform_consequence_check_and_maybe_execute(
             return {"ok": False, "message": "Unknown pending action."}
 
     # 2) Remove vehicle intent handling
-    if parsed_intent and parsed_intent.get("intent") == "remove_vehicle":
+    if intent == "remove_vehicle":
         target_text = parsed_intent.get("target") or image_text
         if target_text:
             target_text = target_text.strip()
@@ -516,7 +627,6 @@ def perform_consequence_check_and_maybe_execute(
             if isinstance(b, list):
                 bookings_count = len(b)
             elif isinstance(b, dict):
-                # if we ever change backend to return { count: X }
                 bookings_count = int(b.get("count", 0))
             else:
                 bookings_count = int(b or 0)
@@ -593,7 +703,7 @@ def perform_consequence_check_and_maybe_execute(
             }
 
     # 3) Trip info queries
-    if parsed_intent and parsed_intent.get("intent") == "trip_query":
+    if intent == "trip_query":
         target_text = parsed_intent.get("target") or image_text
         if target_text:
             target_text = _strip_status_wrappers(target_text).strip()
@@ -721,7 +831,7 @@ def perform_consequence_check_and_maybe_execute(
         }
 
     # 4) Route info queries
-    if parsed_intent and parsed_intent.get("intent") == "route_query":
+    if intent == "route_query":
         target_text = parsed_intent.get("target") or image_text
         if target_text:
             target_text = _strip_status_wrappers(target_text).strip()
@@ -819,14 +929,396 @@ def perform_consequence_check_and_maybe_execute(
             "trips": trips_for_route,
         }
 
-    # 5) greetings / generic queries / fallback
+    # 5) ASSIGN VEHICLE
+    if intent == "assign_vehicle":
+        base_text = raw_text or ""
+        target_text = parsed_intent.get("target") or image_text
+        if not target_text and base_text:
+            target_text = _extract_trip_phrase_from_text(base_text)
+        if target_text:
+            target_text = target_text.strip()
+        logger.info("assign_vehicle target_text=%s raw_text=%s", target_text, base_text)
+
+        if not target_text:
+            return {
+                "ok": False,
+                "message": (
+                    "I understood you want to assign a vehicle, but I couldn't see which trip. "
+                    "Try: 'Assign vehicle 2 to Bulk - 00:01'."
+                ),
+            }
+
+        try:
+            trips = fetch_daily_trips()
+        except Exception as e:
+            logger.exception("Failed to fetch trips for assign_vehicle: %s", e)
+            return {
+                "ok": False,
+                "message": "Unable to load trips right now (backend error).",
+            }
+
+        match = find_best_trip_match(target_text, trips)
+        if not match:
+            return {
+                "ok": False,
+                "message": (
+                    f"I couldn't find a trip matching '{target_text}'. "
+                    "Please use the exact trip name from the UI, e.g. 'Bulk - 00:01'."
+                ),
+            }
+
+        trip_id = match.get("trip_id") or match.get("id") or match.get("tripId")
+        display_name = (
+            match.get("display_name") or match.get("name") or str(trip_id)
+        )
+
+        # Check if there is already a deployment
+        try:
+            dep = node_get(f"/api/helpers/deployment_for_trip/{trip_id}")
+            deployment = None
+            if isinstance(dep, dict):
+                if dep.get("found") and dep.get("deployment"):
+                    deployment = dep["deployment"]
+                elif dep.get("deployment"):
+                    deployment = dep["deployment"]
+            else:
+                deployment = dep
+        except Exception as e:
+            logger.exception("Failed to fetch deployment for assign_vehicle: %s", e)
+            deployment = None
+
+        if deployment:
+            vehicle_id = deployment.get("vehicle_id")
+            driver_id = deployment.get("driver_id")
+            return {
+                "ok": True,
+                "message": (
+                    f"Trip '{display_name}' (id {trip_id}) already has a vehicle deployed "
+                    f"(vehicle {vehicle_id}, driver {driver_id}). "
+                    "For now I won't replace it automatically. "
+                    "If you want to change it, first remove the existing deployment and then assign again."
+                ),
+                "trip": {"trip_id": trip_id, "display_name": display_name},
+                "deployment": deployment,
+            }
+
+        # No deployment yet -> figure out vehicle/driver from text
+        vehicle_id, driver_id = _extract_vehicle_and_driver(base_text)
+
+        if vehicle_id is None:
+            # low-risk option: ask user which vehicle instead of guessing
+            return {
+                "ok": False,
+                "message": (
+                    f"Trip '{display_name}' (id {trip_id}) does not have any vehicle yet. "
+                    "Tell me which vehicle ID to assign, for example: "
+                    f"'Assign vehicle 1 to {display_name}'."
+                ),
+                "trip": {"trip_id": trip_id, "display_name": display_name},
+            }
+
+        body = {
+            "trip_id": trip_id,
+            "vehicle_id": vehicle_id,
+            "driver_id": driver_id,
+        }
+        try:
+            resp = node_post("/api/deployments", json_body=body) or {}
+            deployment_id = resp.get("deployment_id") or resp.get("id")
+        except Exception as e:
+            logger.exception("Failed to create deployment: %s", e)
+            return {
+                "ok": False,
+                "message": "Failed to assign vehicle due to a backend error.",
+            }
+
+        if driver_id is not None:
+            msg = (
+                f"Assigned vehicle {vehicle_id} and driver {driver_id} to trip "
+                f"'{display_name}' (deployment {deployment_id})."
+            )
+        else:
+            msg = (
+                f"Assigned vehicle {vehicle_id} to trip '{display_name}' "
+                f"(deployment {deployment_id}). No driver specified."
+            )
+
+        return {
+            "ok": True,
+            "message": msg,
+            "trip": {"trip_id": trip_id, "display_name": display_name},
+            "deployment": {
+                "deployment_id": deployment_id,
+                "vehicle_id": vehicle_id,
+                "driver_id": driver_id,
+            },
+        }
+
+    # 6) LIST TRIPS
+    if intent == "list_trips":
+        try:
+            trips = fetch_daily_trips()
+        except Exception as e:
+            logger.exception("Failed to fetch trips for list_trips: %s", e)
+            return {
+                "ok": False,
+                "message": "I couldn't load today's trips from the backend.",
+            }
+
+        if not trips:
+            return {"ok": True, "message": "There are no trips scheduled for today."}
+
+        names = [
+            t.get("display_name")
+            or t.get("name")
+            or f"trip {t.get('trip_id')}"
+            for t in trips
+        ]
+        prefix = f"Today I see {len(trips)} trip(s): "
+        msg = prefix + ", ".join(names[:10])
+        if len(names) > 10:
+            msg += f", and {len(names) - 10} more."
+
+        return {"ok": True, "message": msg, "trips": trips}
+
+    # 7) LIST UNASSIGNED TRIPS
+    if intent == "list_unassigned_trips":
+        try:
+            trips = fetch_daily_trips()
+            deployments = fetch_deployments()
+        except Exception as e:
+            logger.exception("Backend error in list_unassigned_trips: %s", e)
+            return {
+                "ok": False,
+                "message": "I couldn't load trips or deployments from the backend.",
+            }
+
+        if not trips:
+            return {"ok": True, "message": "There are no trips scheduled today."}
+
+        deployed_trip_ids = set()
+        for d in deployments or []:
+            tid = d.get("trip_id") or d.get("tripId")
+            if tid is not None:
+                deployed_trip_ids.add(int(tid))
+
+        unassigned = []
+        for t in trips:
+            tid = t.get("trip_id") or t.get("id") or t.get("tripId")
+            if tid is None:
+                continue
+            try:
+                tid_int = int(tid)
+            except Exception:
+                continue
+            if tid_int not in deployed_trip_ids:
+                unassigned.append(t)
+
+        if not unassigned:
+            return {
+                "ok": True,
+                "message": "All trips currently have a vehicle assigned.",
+                "trips": [],
+            }
+
+        names = [
+            t.get("display_name")
+            or t.get("name")
+            or f"trip {t.get('trip_id')}"
+            for t in unassigned
+        ]
+        msg = "Trips without a vehicle: " + ", ".join(names[:10])
+        if len(names) > 10:
+            msg += f", and {len(names) - 10} more."
+
+        return {"ok": True, "message": msg, "trips": unassigned}
+
+    # 8) LIST ROUTES
+    if intent == "list_routes":
+        try:
+            routes = fetch_routes()
+        except Exception as e:
+            logger.exception("Failed to fetch routes for list_routes: %s", e)
+            return {
+                "ok": False,
+                "message": "I couldn't load routes from the backend.",
+            }
+
+        if not routes:
+            return {"ok": True, "message": "There are no routes configured."}
+
+        descs = []
+        for r in routes:
+            route_id = r.get("route_id") or r.get("id") or r.get("routeId")
+            name = (
+                r.get("route_display_name")
+                or r.get("display_name")
+                or r.get("name")
+                or f"Route {route_id}"
+            )
+            shift = r.get("shift_time") or r.get("time")
+            direction = r.get("direction")
+            parts = [name]
+            extras = []
+            if shift:
+                extras.append(shift)
+            if direction:
+                extras.append(direction)
+            if extras:
+                parts.append(" - " + " ".join(extras))
+            descs.append("".join(parts))
+
+        msg = f"I see {len(routes)} route(s): " + ", ".join(descs[:10])
+        if len(routes) > 10:
+            msg += f", and {len(routes) - 10} more."
+
+        return {"ok": True, "message": msg, "routes": routes}
+
+    # 9) TRIPSHEET / TRIP SUMMARY
+    if intent == "tripsheet":
+        base_text = raw_text or ""
+        target_text = parsed_intent.get("target") or image_text
+        if not target_text and base_text:
+            target_text = _extract_trip_phrase_from_text(base_text)
+        if target_text:
+            target_text = target_text.strip()
+        logger.info("tripsheet target_text=%s raw_text=%s", target_text, base_text)
+
+        if not target_text:
+            return {
+                "ok": False,
+                "message": (
+                    "I understood you want a tripsheet, but I couldn't see which trip. "
+                    "Try: 'Generate tripsheet for Bulk - 00:01'."
+                ),
+            }
+
+        try:
+            trips = fetch_daily_trips()
+        except Exception as e:
+            logger.exception("Failed to fetch trips for tripsheet: %s", e)
+            return {
+                "ok": False,
+                "message": "Unable to load trips right now (backend error).",
+            }
+
+        match = find_best_trip_match(target_text, trips)
+        if not match:
+            return {
+                "ok": False,
+                "message": (
+                    f"I couldn't find a trip matching '{target_text}'. "
+                    "Please use the exact trip name from the UI."
+                ),
+            }
+
+        trip_id = match.get("trip_id") or match.get("id") or match.get("tripId")
+        display_name = (
+            match.get("display_name") or match.get("name") or f"Trip {trip_id}"
+        )
+        scheduled_date = match.get("scheduled_date") or match.get("date") or "today"
+
+        # deployment info
+        deployment = None
+        try:
+            dep = node_get(f"/api/helpers/deployment_for_trip/{trip_id}")
+            if isinstance(dep, dict):
+                if dep.get("found") and dep.get("deployment"):
+                    deployment = dep["deployment"]
+                elif dep.get("deployment"):
+                    deployment = dep["deployment"]
+            else:
+                deployment = dep
+        except Exception as e:
+            logger.exception("Error fetching deployment for tripsheet %s: %s", trip_id, e)
+
+        vehicle_id = deployment.get("vehicle_id") if deployment else None
+        driver_id = deployment.get("driver_id") if deployment else None
+
+        # bookings
+        total_bookings = 0
+        confirmed = 0
+        cancelled = 0  # we only see confirmed via /api/bookings/trip
+        bookings_raw = []
+        try:
+            b = node_get(f"/api/bookings/trip/{trip_id}")
+            if isinstance(b, list):
+                bookings_raw = b
+                total_bookings = len(b)
+                # if status field exists, count confirmed; otherwise treat all as confirmed
+                for row in b:
+                    status = (row.get("status") or "").lower()
+                    if status == "confirmed" or status == "":
+                        confirmed += 1
+                    elif status == "cancelled":
+                        cancelled += 1
+            elif isinstance(b, dict):
+                total_bookings = int(b.get("count", 0))
+                confirmed = total_bookings
+            else:
+                total_bookings = int(b or 0)
+                confirmed = total_bookings
+        except Exception:
+            logger.info(
+                "Could not fetch bookings for tripsheet trip %s; defaulting to 0",
+                trip_id,
+            )
+
+        lines = []
+        lines.append(f"Tripsheet — {display_name} ({scheduled_date})")
+        lines.append(f"Trip ID: {trip_id}")
+        lines.append("")
+        lines.append(
+            f"Vehicle: {vehicle_id if vehicle_id is not None else 'None assigned'}"
+        )
+        lines.append(
+            f"Driver: {driver_id if driver_id is not None else 'None assigned'}"
+        )
+        lines.append("")
+        lines.append(f"Bookings: {total_bookings} total")
+        lines.append(f" - Confirmed: {confirmed}")
+        lines.append(f" - Cancelled: {cancelled}")
+        lines.append("")
+        lines.append("Notes:")
+        if deployment is None:
+            lines.append(" - No vehicle is currently deployed on this trip.")
+        else:
+            lines.append(
+                " - Vehicle and driver are already deployed for this trip."
+            )
+        if total_bookings == 0:
+            lines.append(" - There are currently no confirmed bookings.")
+
+        msg = "\n".join(lines)
+
+        return {
+            "ok": True,
+            "message": msg,
+            "trip": {
+                "trip_id": trip_id,
+                "display_name": display_name,
+                "scheduled_date": scheduled_date,
+            },
+            "deployment": deployment,
+            "bookings": {
+                "total": total_bookings,
+                "confirmed": confirmed,
+                "cancelled": cancelled,
+                "raw": bookings_raw,
+            },
+        }
+
+    # 10) greetings / generic queries / fallback
     if parsed_intent and parsed_intent.get("intent") == "greeting":
         return {
             "ok": True,
             "message": (
-                "Hi — I'm Movi. I can help you inspect trips, routes, deployments and vehicles. "
-                "Try something like: 'What is the status of Bulk - 00:01?' or "
-                "'Remove the vehicle from Bulk - 00:01'."
+                "Hi — I'm Movi. I can help manage trips, routes, vehicles and bookings. "
+                "Try things like:\n"
+                " - 'What is the status of Bulk - 00:01?'\n"
+                " - 'Assign vehicle 2 to Bulk - 00:01'\n"
+                " - 'Show trips with no vehicle'\n"
+                " - 'Generate tripsheet for Bulk - 00:01'."
             ),
         }
 
@@ -836,16 +1328,20 @@ def perform_consequence_check_and_maybe_execute(
             "message": (
                 "I understood this as a general query but I don't yet have a specific action wired for it. "
                 "Try asking about a particular trip or route, for example: "
-                "'status of Bulk - 00:01' or 'show me trips on route 1'."
+                "'status of Bulk - 00:01', 'show all trips', or 'list routes'."
             ),
         }
 
-    logger.info("Could not map parsed intent to an action: %s", parsed_intent)
+    # catch-all
     return {
         "ok": False,
         "message": (
-            "Sorry — I couldn't process that. Please provide more details "
-            "(trip or route name, or click something in the UI)."
+            "I couldn't map this to an action. "
+            "Try something like:\n"
+            " - 'Assign vehicle 1 to Bulk - 00:01'\n"
+            " - 'Remove vehicle from Bulk - 00:01'\n"
+            " - 'Show all trips'\n"
+            " - 'Tripsheet for Bulk - 00:01'."
         ),
     }
 
@@ -856,91 +1352,104 @@ def perform_consequence_check_and_maybe_execute(
 
 
 @app.post("/ai/agent")
-async def ai_agent(req: AgentRequest):
-  logger.info("Received AI request: %s", req.dict())
-  text = (req.input or "").strip()
+def ai_agent(req: AgentRequest):
+    text = (req.input or "").strip()
 
-  # Greeting quick path
-  if text.lower() in ("hi", "hello", "hey", "hey movi", "hi movi"):
-      return {
-          "ok": True,
-          "message": (
-              "Hi — I'm Movi. I can help manage trips, routes and vehicles. "
-              "Try: 'Remove the vehicle from Bulk - 00:01' or "
-              "'What is the status of Bulk - 00:01?'."
-          ),
-      }
+    # Greeting quick path
+    if text.lower() in ("hi", "hello", "hey", "hey movi", "hi movi"):
+        return {
+            "ok": True,
+            "message": (
+                "Hi — I'm Movi. I can help manage trips, routes and vehicles. "
+                "Try: 'Remove the vehicle from Bulk - 00:01', "
+                "'Assign vehicle 1 to Bulk - 00:01', or "
+                "'What is the status of Bulk - 00:01?'."
+            ),
+        }
 
-  # confirmation path
-  if req.pendingId and text.lower() in (
-      "yes",
-      "y",
-      "confirm",
-      "proceed",
-      "ok",
-      "okay",
-      "sure",
-  ):
-      logger.info("Processing confirmation for pendingId=%s", req.pendingId)
-      result = perform_consequence_check_and_maybe_execute(
-          {"intent": "confirm"}, pending_id=req.pendingId
-      )
-      logger.info("Confirmation result: %s", result)
-      return result
+    # confirmation path
+    if req.pendingId and text.lower() in (
+        "yes",
+        "y",
+        "confirm",
+        "proceed",
+        "ok",
+        "okay",
+        "sure",
+    ):
+        logger.info("Processing confirmation for pendingId=%s", req.pendingId)
+        result = perform_consequence_check_and_maybe_execute(
+            {"intent": "confirm"}, pending_id=req.pendingId
+        )
+        logger.info("Confirmation result: %s", result)
+        return result
 
-  # parse intent (LLM optional)
-  parsed = None
-  if OPENAI_API_KEY and text:
-      try:
-          prompt = f"""
+    # parse intent (LLM optional)
+    parsed = None
+    if OPENAI_API_KEY and text:
+        try:
+            prompt = f"""
 You are an assistant for a bus transport operations system.
 
 Extract intent and target_text from this user message.
 
 Allowed intents:
 - "remove_vehicle": user wants to unassign/cancel a vehicle or deployment from a trip.
+- "assign_vehicle": user wants to allocate/assign/deploy a vehicle (and optional driver) to a trip.
 - "trip_query": asking about a specific trip or bus service (status, bookings, vehicle, etc.).
 - "route_query": asking about a bus route (stops, direction, trips on that route, etc.).
+- "list_trips": asking to list today's trips.
+- "list_unassigned_trips": asking which trips don't have a vehicle/bus assigned.
+- "list_routes": asking to list the available routes.
+- "tripsheet": asking for a tripsheet / trip summary for a specific trip.
 - "confirm": confirming a pending destructive action (yes, proceed, okay, etc.).
 - "greeting": simple greeting like hi/hello.
 - "unknown": anything else.
 
-For "trip_query" or "route_query", set target_text to the most relevant route or trip phrase
-mentioned (for example "Bulk - 00:01", "Route 24", "TechLoop - 09:00").
+For intents that relate to a specific trip or route
+("remove_vehicle", "assign_vehicle", "trip_query", "tripsheet"),
+set target_text to the most relevant trip phrase mentioned
+(for example "Bulk - 00:01", "TechLoop - 09:00").
+
+For list_trips, list_routes, list_unassigned_trips, target_text can be null.
 
 Respond ONLY with valid JSON in this shape:
 {{"intent": "<one of the intents above>", "target_text": <string or null>}}
 
 Message: "{text}"
 """
-          llm_out = call_llm(prompt)
-          parsed_json = json.loads(llm_out) if llm_out else {}
-          parsed = {
-              "intent": parsed_json.get("intent"),
-              "target": parsed_json.get("target_text"),
-          }
-      except Exception as e:
-          logger.warning("LLM parse failed: %s - falling back", e)
-          parsed = fallback_parse_intent(text)
-  else:
-      parsed = fallback_parse_intent(text)
+            llm_out = call_llm(prompt)
+            parsed_json = json.loads(llm_out) if llm_out else {}
+            parsed = {
+                "intent": parsed_json.get("intent"),
+                "target": parsed_json.get("target_text"),
+            }
+        except Exception as e:
+            logger.warning("LLM parse failed: %s - falling back", e)
+            parsed = fallback_parse_intent(text)
+    else:
+        parsed = fallback_parse_intent(text)
 
-  # NEW: if parser says unknown (or gives no intent) but the text looks like a trip/route name,
-  # treat it as a trip_query on that exact text.
-  if not parsed or parsed.get("intent") in (None, "unknown"):
-      if _looks_like_trip_or_route_name(text):
-          parsed = {"intent": "trip_query", "target": text}
+    # If still unknown but looks like "Bulk - 00:01" style, treat as trip_query
+    if not parsed or parsed.get("intent") in (None, "unknown"):
+        if _looks_like_trip_or_route_name(text):
+            parsed = {"intent": "trip_query", "target": text}
+        else:
+            parsed = parsed or {"intent": "unknown", "target": None}
 
-  logger.info("Parsed intent: %s", parsed)
+    # Attach raw_text so business logic can re-parse vehicle/driver ids etc.
+    parsed["raw_text"] = text
 
-  result = perform_consequence_check_and_maybe_execute(
-      parsed,
-      image_text=req.imageText,
-      pending_id=req.pendingId,
-      current_page=req.currentPage,
-  )
-  logger.info("Action result: %s", result)
-  return result
+    logger.info("Parsed intent: %s", parsed)
+
+    result = perform_consequence_check_and_maybe_execute(
+        parsed,
+        image_text=req.imageText,
+        pending_id=req.pendingId,
+        current_page=req.currentPage,
+    )
+    logger.info("Action result: %s", result)
+    return result
 
 
 @app.get("/ai/health")
