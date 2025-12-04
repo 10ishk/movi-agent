@@ -38,11 +38,14 @@ router.get("/", async (req, res) => {
     }
 
     // nothing => empty array
-    return res.json([]);
-  } catch (err) {
-    console.error("Error in dailyTrips route:", err);
-    return res.status(500).json({ ok: false, error: "Failed to load daily trips" });
-  }
+  // nothing => empty array
+  return res.json([]);
+} catch (err) {
+  console.error("Error in dailyTrips route:", err);
+  // Don't hard fail – just return an empty list so the bot UI doesn't blow up
+  return res.json([]);
+}
 });
+
 
 module.exports = router;

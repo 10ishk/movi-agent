@@ -1,5 +1,9 @@
 [
   { "trip_id": 1, "display_name": "Bulk - 00:01" },
-  { "trip_id": 2, "display_name": "Path - 00:10" },
-  { "trip_id": 3, "display_name": "Other - 00:20" }
+  { "trip_id": 2, "display_name": "Bulk - 00:03" },
+  { "trip_id": 3, "display_name": "Path Path - 00:02" },
+  { "trip_id": 4, "display_name": "Path Path - 00:10" },
+  { "trip_id": 5, "display_name": "Groone - 00:59" },
+  { "trip_id": 6, "display_name": "AVX - 05:15" },
+  { "trip_id": 7, "display_name": "NoShow - BTS - 13:00" }
 ]
