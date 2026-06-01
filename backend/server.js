@@ -1,10 +1,7 @@
-// server.js (updated)
 const express = require("express");
 const cors = require("cors");
-const path = require("path");
-
 const app = express();
-const PORT = 5000;
+const PORT = process.env.PORT || 5000;
 
 app.use(cors());
 app.use(express.json());
@@ -20,9 +17,7 @@ app.use("/api/deployments", require("./routes/deployments"));
 app.use("/api/bookings", require("./routes/bookings"));
 app.use("/api/image", require("./routes/image"));
 
-app.get("/", (req, res) => res.send("Movi Backend API is running 🚍"));
+app.get("/", (req, res) => res.send("Movi Backend API is running"));
 app.use("/api/helpers", require("./routes/admin_helpers"));
 
-app.listen(PORT, () => console.log(`🚀 Server running on http://localhost:${PORT}`));
-
-app.use("/api/agent", require("./routes/agent"));
+app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));

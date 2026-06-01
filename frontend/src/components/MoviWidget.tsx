@@ -5,8 +5,8 @@ interface MoviWidgetProps {
   currentPage: 'busDashboard' | 'manageRoute';
 }
 
-const AGENT_API = 'http://localhost:8000/ai/agent';
-const IMAGE_API = 'http://localhost:5000/api/image/parse';
+const AGENT_API = import.meta.env.VITE_AGENT_API || 'http://localhost:8000/ai/agent';
+const IMAGE_API = import.meta.env.VITE_IMAGE_API || 'http://localhost:5000/api/image/parse';
 
 const SendIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>;
 const MicIcon = ({isListening}: {isListening: boolean}) => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={isListening ? 'text-red-500' : ''}><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>;
@@ -23,7 +23,7 @@ const MoviWidget: React.FC<MoviWidgetProps> = ({ currentPage }) => {
   const [imageText, setImageText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isParsingImage, setIsParsingImage] = useState(false);
-  const [pendingId, setPendingId] = useState<string | null>(null);   // NEW
+  const [pendingId, setPendingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isListening, setIsListening] = useState(false);
 
@@ -67,7 +67,6 @@ const MoviWidget: React.FC<MoviWidgetProps> = ({ currentPage }) => {
     window.speechSynthesis.speak(utterance);
   };
 
-  // UPDATED handleSend -------------------------------------------------
   const handleSend = async () => {
     if (!userInput.trim() && !imageText.trim()) return;
 
@@ -102,14 +101,11 @@ const MoviWidget: React.FC<MoviWidgetProps> = ({ currentPage }) => {
       }
 
       const data = await apiResponse.json();
-      // log the full backend response to console — helpful for debugging
       console.log("AI agent raw response:", data);
 
-      // The Python agent returns `message` (and sometimes `response`) — prefer `message`.
       const agentResponseText = data.message || data.response || (data.ok === false ? (data.error || JSON.stringify(data)) : 'Sorry, I could not process that.');
 
 
-      // if backend asks for confirmation, store pendingId and show appropriate message
       if (data?.confirmationRequired && data?.pendingId) {
         setPendingId(data.pendingId);
       }
@@ -121,7 +117,6 @@ const MoviWidget: React.FC<MoviWidgetProps> = ({ currentPage }) => {
       };
       setMessages(prev => [...prev, agentResponse]);
 
-      // speak the message (optional)
       speakResponse(agentResponseText);
 
     } catch (e: any) {
@@ -134,7 +129,6 @@ const MoviWidget: React.FC<MoviWidgetProps> = ({ currentPage }) => {
     }
   };
 
-  // NEW helper -------------------------------------------------------
   const handleConfirmPending = async () => {
     if (!pendingId) {
       alert("No pending action to confirm.");
@@ -164,7 +158,6 @@ const MoviWidget: React.FC<MoviWidgetProps> = ({ currentPage }) => {
       setMessages(prev => [...prev, { id: Date.now() + 1, sender: 'agent', text: agentResponseText }]);
       speakResponse(agentResponseText);
 
-      // clear pending on success (backend should remove it)
       setPendingId(null);
     } catch (e: any) {
       console.error(e);
@@ -207,7 +200,11 @@ const MoviWidget: React.FC<MoviWidgetProps> = ({ currentPage }) => {
       }
       
       const data = await apiResponse.json();
-      setImageText(data.text || '');
+      if (data.text) {
+        setImageText(data.text);
+      } else {
+        setError(data.message || 'Image upload is reserved for a future OCR/screenshot parsing enhancement.');
+      }
       
     } catch (e: any) {
       console.error(e);
@@ -285,12 +282,17 @@ const MoviWidget: React.FC<MoviWidgetProps> = ({ currentPage }) => {
 
       {isParsingImage && (
         <div className="px-4 pb-2 text-sm text-blue-700">
-            Parsing image...
+            Preparing image...
+        </div>
+      )}
+      {error && !isParsingImage && (
+        <div className="px-4 pb-2 text-sm text-red-600">
+            {error}
         </div>
       )}
       {imageText && !isParsingImage && (
           <div className="px-4 pb-2 text-sm text-green-700">
-              Image text parsed. Ready to send.
+              Image text ready to send.
           </div>
       )}
 
@@ -310,8 +312,7 @@ const MoviWidget: React.FC<MoviWidgetProps> = ({ currentPage }) => {
         <div className="flex justify-between items-center mt-2">
             <div className="flex gap-2">
               <input type="file" accept="image/*" ref={fileInputRef} onChange={handleImageUpload} style={{ display: 'none' }} />
-              <button onClick={() => fileInputRef.current?.click()} className="text-xs flex items-center gap-1 text-brand-gray-600 hover:text-brand-blue" disabled={isParsingImage}><ImageIcon/> Parse Image</button>
-              {/* UPDATED Confirm Pending button */}
+              <button onClick={() => fileInputRef.current?.click()} className="text-xs flex items-center gap-1 text-brand-gray-600 hover:text-brand-blue" disabled={isParsingImage}><ImageIcon/> Attach Image</button>
               <button
                 className="text-xs text-brand-gray-600 hover:text-brand-blue"
                 onClick={handleConfirmPending}

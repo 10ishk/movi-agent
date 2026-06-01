@@ -3,6 +3,8 @@ import { MOCK_ROUTES } from '../constants';
 import type { Route } from '../types';
 import MoviWidget from '../components/MoviWidget';
 
+const BACKEND_API = import.meta.env.VITE_BACKEND_API || 'http://localhost:5000';
+
 const HistoryIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 4v6h6"></path><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg>;
 const DownloadIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>;
 const PlusIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>;
@@ -35,7 +37,7 @@ const ManageRoute: React.FC = () => {
         setLoadingRoutes(true);
         setRoutesError(null);
 
-        const res = await fetch('/api/routes');
+        const res = await fetch(`${BACKEND_API}/api/routes`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
 
